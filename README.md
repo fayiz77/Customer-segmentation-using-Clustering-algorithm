@@ -38,6 +38,6 @@ The script generates a three-part diagnostic dashboard:
 The model successfully identified [Number] distinct customer segments, such as "High-Spenders" and "Budget-Conscious" customers.
 
 ## 📂 How to Run
-1. Clone the repo: `git clone https://github.com/your-username/customer-segmentation.git`
+1. Clone the repo: `git clone https://github.com/your-fayiz77/customer-segmentation.git`
 2. Install dependencies: `pip install -r requirements.txt`
 3. Run the notebook: `jupyter notebook`
