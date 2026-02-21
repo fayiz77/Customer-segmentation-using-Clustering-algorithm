@@ -1,0 +1,300 @@
+import pandas as pd
+import numpy as np
+import matplotlib.pyplot as plt
+import seaborn as sns
+from sklearn.cluster import KMeans
+from sklearn.preprocessing import StandardScaler
+from sklearn.decomposition import PCA
+from scipy.stats import f_oneway
+
+# --- 1. MOCK DATA GENERATION ---
+# Based on Table III in the research paper.
+# We simulate data for 2138 customers, as in the paper.
+# To make the clustering meaningful, we will create 4 hidden "archetypes"
+# that the K-Means algorithm will hopefully find.
+
+def get_variables_list():
+    """Returns the 15 variables from Table III."""
+    return [
+        "V1: Prefer email",
+        "V2: Quality products are costly",
+        "V3: Think wisely before buying",
+        "V4: TV is major entertainment",
+        "V5: Entertainment is necessity",
+        "V6: Prefers fast food",
+        "V7: More health-conscious",
+        "V8: Competition improves quality",
+        "V9: Women active in purchase",
+        "V10: Ads are positive",
+        "V11: Enjoy watching movies",
+        "V12: Like modern style/fashion",
+        "V13: Prefers branded products",
+        "V14: Prefer outing on weekends",
+        "V15: Prefer credit card"
+    ]
+
+def generate_mock_data(n_customers=2138, n_clusters=4):
+    """
+    Generates mock customer data based on 4 personas derived from the paper.
+    Each customer rates 15 variables on a scale of 1 (Strongly Disagree) to 5 (Strongly Agree).
+    """
+    print(f"Generating mock data for {n_customers} customers...")
+    variables = get_variables_list()
+    n_vars = len(variables)
+    
+    # Define 4 archetypes (our "hidden" segments)
+    # These are our "guesses" at the cluster centers
+    archetypes = {
+        # Persona 1: "Traditionalist in Transition"
+        # Adapting (email, spending) but still traditional.
+        "Traditionalist": [3, 4, 4, 4, 2, 2, 3, 4, 2, 3, 4, 2, 2, 3, 2],
+        
+        # Persona 2: "Modern Spender"
+        # Aggressive buyer, fashion-oriented, likes credit cards.
+        "Modern Spender": [4, 2, 2, 3, 4, 4, 2, 2, 4, 2, 3, 5, 5, 4, 5],
+        
+        # Persona 3: "Value-Seeking Optimist"
+        # Spends freely but wants value. Influenced by TV ads, not brands.
+        "Value Seeker": [2, 3, 3, 5, 3, 3, 4, 4, 3, 4, 4, 3, 2, 4, 3],
+        
+        # Persona 4: "Health-Conscious Skeptic"
+        # A hypothetical 4th group: health-conscious, skeptical of ads, careful.
+        "Skeptic": [2, 4, 5, 2, 2, 1, 5, 3, 3, 1, 2, 2, 2, 2, 1]
+    }
+    
+    # Create data by adding noise to the archetypes
+    df_list = []
+    customers_per_cluster = n_customers // n_clusters
+    
+    for i, (name, center) in enumerate(archetypes.items()):
+        # Add a bit of extra to the last cluster to match n_customers
+        n_cust = customers_per_cluster
+        if i == n_clusters - 1:
+            n_cust = n_customers - (customers_per_cluster * (n_clusters - 1))
+            
+        # Generate random data centered around the archetype
+        # 'scale' controls how "messy" or "distinct" the clusters are
+        cluster_data = np.random.normal(loc=center, scale=0.8, size=(n_cust, n_vars))
+        
+        # Clip data to be within the 1-5 rating scale
+        cluster_data = np.clip(cluster_data, 1, 5).round()
+        
+        df_cluster = pd.DataFrame(cluster_data, columns=variables)
+        df_cluster['Original_Persona'] = name # For our own validation
+        df_list.append(df_cluster)
+
+    # Combine all clusters into one DataFrame and shuffle
+    df = pd.concat(df_list).sample(frac=1).reset_index(drop=True)
+    return df
+
+# --- 2. PREPROCESSING & CLUSTERING ---
+
+def preprocess_and_cluster(df, n_clusters=4):
+    """
+    Applies StandardScaler and K-Means clustering.
+    """
+    print(f"Preprocessing and running K-Means with k={n_clusters}...")
+    variables = get_variables_list()
+    
+    # Isolate the data for clustering
+    X = df[variables]
+    
+    # Standardize the data
+    # This is crucial for K-Means, as it ensures all variables (which are
+    # already on the same 1-5 scale) are centered around 0 and have a
+    # standard deviation of 1, giving them equal weight.
+    scaler = StandardScaler()
+    X_scaled = scaler.fit_transform(X)
+    
+    # Run K-Means
+    # n_init=10 runs the algorithm 10 times with different random seeds
+    # and picks the best result (lowest inertia).
+    # random_state=42 ensures our results are reproducible.
+    kmeans = KMeans(n_clusters=n_clusters, n_init=10, random_state=42)
+    kmeans.fit(X_scaled)
+    
+    # Add the cluster labels back to the original DataFrame
+    df['Cluster'] = kmeans.labels_
+    return df, kmeans
+
+# --- 3. ANALYSIS & VALIDATION (ANOVA) ---
+
+def perform_anova_test(df, variables):
+    """
+    Performs a one-way ANOVA test for each variable across the clusters.
+    This replicates the analysis in Table VI of the paper.
+    
+    A high F-statistic and a low P-value (e.g., < 0.05) mean that the
+    variable is a significant differentiator between the clusters.
+    """
+    print("\n--- ANOVA Statistical Validation (Replicating Table VI) ---")
+    anova_results = []
+    
+    clusters = df['Cluster'].unique()
+    clusters.sort()
+    
+    for var in variables:
+        # Get the data for this variable, grouped by cluster
+        # This creates a list of arrays, e.g., [var_data_cluster_0, var_data_cluster_1, ...]
+        grouped_data = [df[var][df['Cluster'] == c] for c in clusters]
+        
+        # Perform the one-way ANOVA
+        f_stat, p_value = f_oneway(*grouped_data)
+        anova_results.append({
+            "Variable": var,
+            "F-Statistic": f_stat,
+            "P-Value": p_value
+        })
+        
+    # Create a DataFrame of the results and sort by F-Statistic
+    df_anova = pd.DataFrame(anova_results).sort_values(by="F-Statistic", ascending=False)
+    
+    print("Variables ranked by their significance in separating clusters:")
+    print(df_anova.to_string(index=False, float_format="%.4f"))
+    return df_anova
+
+# --- 4. CLUSTER INTERPRETATION ---
+
+def analyze_cluster_centers(df, variables):
+    """
+    Calculates the mean value of each variable for each cluster.
+    This is the most important step for building personas and
+    replicates the "Final Cluster Centre" data from Table V.
+    """
+    print("\n--- Final Cluster Centers (Replicating Table V) ---")
+    # Group by the new cluster label and calculate the mean for all variables
+    cluster_centers = df.groupby('Cluster')[variables].mean()
+    
+    # Transpose for better readability (clusters as columns, variables as rows)
+    print(cluster_centers.T.to_string(float_format="%.2f"))
+    
+    print("\n--- INTERPRETATION GUIDE ---")
+    print("Compare the means above to the personas from the paper:")
+    print(" - 'Modern Spender': High on V12, V13, V15 (Fashion, Brands, Credit).")
+    print(" - 'Traditionalist': Low on V6, V12, V15 (Fast Food, Fashion, Credit).")
+    print(" - 'Value Seeker': High on V4, V10 (TV, Ads), but low on V13 (Brands).")
+    print(" - 'Skeptic': High on V7, V3 (Health, Thinks wisely), low on V6, V10 (Fast food, Ads).")
+    
+    return cluster_centers
+
+# --- 5. VISUALIZATION DASHBOARD ---
+
+def visualize_results(df, df_anova, cluster_centers):
+    """
+    Generates a 3-part visualization dashboard.
+    1. PCA Scatter Plot of cluster distribution (like Fig. 4)
+    2. Bar Plot of ANOVA F-Statistics (like Fig. 5)
+    3. Profile Plot of cluster centers (for persona building)
+    """
+    print("\nGenerating visualization dashboard...")
+    
+    # --- Plot 1: PCA Scatter Plot (Cluster Distribution) ---
+    # We can't plot 15 dimensions. We use PCA to reduce
+    # the data to 2 dimensions *for visualization only*.
+    
+    variables = get_variables_list()
+    X_scaled = StandardScaler().fit_transform(df[variables])
+    pca = PCA(n_components=2, random_state=42)
+    X_pca = pca.fit_transform(X_scaled)
+    
+    df_pca = pd.DataFrame(X_pca, columns=['PCA1', 'PCA2'])
+    df_pca['Cluster'] = df['Cluster']
+    
+    plt.figure(figsize=(18, 6))
+    plt.subplot(1, 3, 1)
+    sns.scatterplot(
+        data=df_pca,
+        x='PCA1',
+        y='PCA2',
+        hue='Cluster',
+        palette='viridis',
+        alpha=0.7,
+        s=50
+    )
+    plt.title('Customer Segments (PCA Visualization)')
+    plt.xlabel('Principal Component 1')
+    plt.ylabel('Principal Component 2')
+    plt.legend(title='Cluster')
+    
+    # --- Plot 2: ANOVA F-Statistics (Variable Importance) ---
+    plt.subplot(1, 3, 2)
+    # Shorten variable names for the plot
+    short_vars = [v.split(':')[0] for v in df_anova['Variable']]
+    sns.barplot(
+        data=df_anova,
+        x='F-Statistic',
+        y='Variable',
+        palette='plasma'
+    )
+    plt.yticks(ticks=range(len(short_vars)), labels=short_vars)
+    plt.title('Variable Importance (ANOVA F-Statistic)')
+    plt.xlabel('F-Statistic (Higher is more significant)')
+    plt.ylabel('Variable')
+    
+    # --- Plot 3: Cluster Profile Plot (Persona Analysis) ---
+    # We "melt" the cluster centers DataFrame for easier plotting with seaborn
+    df_centers_melted = cluster_centers.reset_index().melt(
+        id_vars='Cluster',
+        value_vars=variables,
+        var_name='Variable',
+        value_name='Mean Rating (1-5)'
+    )
+    
+    plt.figure(figsize=(15, 10))
+    # Using catplot (kind='bar') is great for this
+    g = sns.catplot(
+        data=df_centers_melted,
+        x='Variable',
+        y='Mean Rating (1-5)',
+        hue='Cluster',
+        kind='bar',
+        palette='viridis',
+        height=6,
+        aspect=2.5
+    )
+    g.fig.suptitle('Cluster Profile Comparison (Final Cluster Centers)', y=1.03)
+    plt.xticks(rotation=90)
+    plt.ylim(1, 5) # Set Y-axis to the 1-5 scale
+    plt.grid(axis='y', linestyle='--', alpha=0.7)
+    
+    # Show all plots
+    plt.tight_layout()
+    plt.show()
+
+# --- 6. MAIN EXECUTION ---
+
+def main():
+    """
+    Main function to run the entire segmentation pipeline.
+    """
+    # --- Configuration ---
+    N_CLUSTERS = 4
+    N_CUSTOMERS = 2138
+    
+    # --- Pipeline ---
+    variables = get_variables_list()
+    
+    # 1. Get Data
+    df_raw = generate_mock_data(N_CUSTOMERS, N_CLUSTERS)
+    
+    # 2. Cluster
+    df_clustered, kmeans_model = preprocess_and_cluster(df_raw.copy(), N_CLUSTERS)
+    
+    # 3. Interpret
+    cluster_centers = analyze_cluster_centers(df_clustered, variables)
+    
+    # 4. Validate
+    df_anova = perform_anova_test(df_clustered, variables)
+    
+    # 5. Visualize
+    visualize_results(df_clustered, df_anova, cluster_centers)
+    
+    print("\n--- Pipeline Complete ---")
+    print(f"Original hidden personas vs. K-Means labels (cross-tabulation):")
+    # This Crosstab is the "proof" that our K-Means worked.
+    # Ideally, each row (Original_Persona) will have most of its members
+    # in a single column (Cluster).
+    print(pd.crosstab(df_clustered['Original_Persona'], df_clustered['Cluster']))
+
+if __name__ == "__main__":
+    main()
